@@ -8,6 +8,7 @@ from vars import (
     KEYWORDS,
     LORA_CONFIG,
     WILDCARDS,
+    txt2img_args,
 )
 
 KEY_TOKEN = re.compile(r"\{([^{}]+)\}")
@@ -199,11 +200,14 @@ def _dimension_segment(args: Dict) -> Tuple[str, set[str]]:
     return segment, used
 
 
-def _collect_groups(args: Dict, fields: Sequence[Tuple[Sequence[str], str, callable | None]], consumed: set[str]) -> List[str]:
+def _collect_groups(args: Dict, fields: Sequence[Tuple[Sequence[str], str, callable | None]], consumed: set[str], skip_defaults: bool = False) -> List[str]:
     items: List[str] = []
     for keys, label, normalizer in fields:
         key, value = _pick_value(args, keys, normalizer)
         if key:
+            if skip_defaults and key in txt2img_args and str(args.get(key)) == str(txt2img_args.get(key)):
+                consumed.add(key)
+                continue
             items.append(_format_field(label, value))
             consumed.add(key)
     return items
@@ -220,7 +224,7 @@ def format_generation_summary(gen_args: Dict, default_model: str) -> str:
         consumed.update(used)
 
     for field_group in (SAMPLING_FIELDS, RANDOM_FIELDS):
-        group = _collect_groups(args, field_group, consumed)
+        group = _collect_groups(args, field_group, consumed, skip_defaults=True)
         if group:
             segments.append(" ".join(group))
 

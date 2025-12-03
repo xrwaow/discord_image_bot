@@ -1,5 +1,5 @@
 
-MODEL_NAME = "i32_x2_mk2_aaa"#"z_image"
+MODEL_NAME = "z_image"
 # "ntrMIXIllustriousXL_xiii"
 # "i32_x2_mk2_aaa"
 # "dreambox_v40"
@@ -92,6 +92,13 @@ WILDCARDS = {
         "jumping",
         "dancing",
     ],
+    "prompt": [
+        "A woman standing on a rainy city sidewalk holding a transparent umbrella, making a cute pouty expression. Raindrops on the umbrella clearly visible between heads and raised arms. Her floral top appears slightly damp at the shoulders. Street signs and headlights create soft bokeh lights. Photorealistic mood.",
+        "A young woman is taking a mirror selfie inside a modern stainless-steel elevator. She has long, straight dark hair that falls over her shoulders. She’s making a playful duck-face expression while looking slightly to the side instead of directly at the camera. She’s holding a dark-colored smartphone with her right hand, her elbow slightly bent. She’s wearing an off-shoulder, short-sleeved black crop top with a white floral pattern, exposing her shoulders and a bit of her midriff. She also wears high-waisted black pants. The lighting inside the elevator is bright and even, reflecting softly on the metallic walls. The elevator interior features symmetrical button panels on both sides, with rows of metallic circular buttons. The floor has a mix of white and darker tiles, and the lower part of the elevator wall has a marble-like texture. The overall vibe is casual, slightly playful, and clean, with a sense of modern everyday style.",
+        "90's photo style with camera flash, small orange date digital text \"13.08.1995\" in bottom right corner, japanese mountain road, nissan silvia s-13, japanese woman wearing hoodie and pleated skirt posing in front of car, summer, sunlight",
+        "Style is photograph, RAW photo, taken on a Canon camera. a young woman, posing dramatically in front of a mountain village, sun rise, there is water on the right, a cat on a roof in the background",
+        "Ultra-detailed, cinematic photograph of a modern wooden building with a unique architectural design, featuring multiple rectangular panels arranged in a grid-like pattern, each panel containing a small rectangular opening. The building is located on a rocky terrain, with a body of water visible with a cinematic backdrop of. The sky is overcast and foggy, creating a hazy atmosphere. On the top of the building, there are several small green plants growing on the roof, adding a touch of greenery to the roof. In the foreground, a person wearing a dark jacket and dark pants stands facing away from the camera, with their back to the viewer. The person is standing on a gravel ground with a puddle of water in front of them, reflecting the building and the surrounding landscape. The ground is covered in dark gravel, and there is a large dark rock on the right side of A cinematic scene. A wooden platform or walkway extends from the building towards the entrance, which is made of wooden planks and has several string lights hanging from it. The entrance has a glass door that allows natural light to enter, and a small table and chairs can be seen inside the glass door. A stone wall appears vividly on the left side, partially obscured by the building's exterior. The overall lighting is soft and muted, giving A cinematic scene a peaceful and serene feel. High fidelity, realistic texture, ultra detail, cinematic tone mapping.",
+    ] # this is for z_image only rn, TODO: add different prompts for anime
 }
 
 LORA_CONFIG = {
@@ -143,9 +150,6 @@ LORA_CONFIG = {
             "keywords": "Ani2rel",
         },
     ],
-}
-
-LORA_CONFIG_beta = {
     "MonMon": [
         {
             "lora": "testing/mon_monmon2133.safetensors",
@@ -192,7 +196,20 @@ LORA_CONFIG_beta = {
     ]
 }
 
-LORA_CONFIG.update(LORA_CONFIG_beta)
+LORA_CONFIG_Z_IMAGE = {
+    "Movie": [
+        {
+            "lora": "z_image/movie_zimage_lora.safetensors",
+            "strength": 1,
+        },
+    ],
+    "grainscape": [
+        {
+            "lora": "z_image/grainscape_zimage.safetensors",
+            "strength": 1,
+        },
+    ]
+}
 
 DIMENSION_PRESETS = {
     "512x640": (512, 640),
@@ -201,6 +218,7 @@ DIMENSION_PRESETS = {
     "1024x1280": (1024, 1280),
     "1120x1440": (1120, 1440),
     "1440x1120": (1440, 1120),
+    "1536x1280": (1536, 1280),
 }
 
 if MODEL_NAME == "z_image":
@@ -230,4 +248,6 @@ if MODEL_NAME == "z_image":
         'sampler_name': "euler",
         'scheduler': "simple",
     }
+
+    LORA_CONFIG = LORA_CONFIG_Z_IMAGE
     DEFAULT_POSITIVE_PROMPT = DEFAULT_NEGATIVE_PROMPT = ""

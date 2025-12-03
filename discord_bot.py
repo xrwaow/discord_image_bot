@@ -1,6 +1,7 @@
 #!/home/xr/code/ComfyUI/.venv/bin/python
 import asyncio
 import re
+import time
 from io import BytesIO
 from typing import List, Optional
 
@@ -9,7 +10,7 @@ import httpx
 from discord import app_commands
 from PIL import Image
 
-from imagegen import generate_images, preprocess_gen_args, upscale_image
+from imagegen import generate_images, preprocess_gen_args, upscale_image, set_progress_bar_global_hook
 from prompt_processing import format_generation_summary, preprocess_prompt
 import vars
 from vars import (
@@ -43,6 +44,20 @@ class ImageJob:
         self.deferred = deferred
         self.job_type = job_type
         self.base_image = base_image
+        self.progress_message = None
+        self.last_progress_update = 0
+
+
+def build_progress_bar(current: int, total: int, bar_length: int = 10) -> str:
+    """Build an ASCII progress bar that fits in bar_length characters."""
+    if total <= 0:
+        return "░" * bar_length
+    
+    filled = int((current / total) * bar_length)
+    filled = min(filled, bar_length)
+    
+    bar = "█" * filled + "░" * (bar_length - filled)
+    return f"`{bar}` {current}/{total}"
 
 
 job_queue = asyncio.Queue()
@@ -106,13 +121,13 @@ def format_info(user, gen_args):
     if 'batch_size' in gen_args:
         img_c = " Generated image" if gen_args['batch_size'] == 1 else f" Generated {gen_args['batch_size']} images"
     else:
-        img_c = " Upscaled image:"
+        img_c = " Upscaled image"
 
     display_neg = gen_args.get('display_neg_prompt')
     if display_neg:
-        neg_prompt = f"\nnegative prompt: ```{display_neg}```"
+        neg_prompt = f"\nnegative: ```{display_neg}```"
     elif gen_args.get('neg_prompt') and gen_args['neg_prompt'] != DEFAULT_NEGATIVE_PROMPT:
-        neg_prompt = f"\nnegative prompt: ```{gen_args['neg_prompt']}```"
+        neg_prompt = f"\nnegative: ```{gen_args['neg_prompt']}```"
     else:
         neg_prompt = ''
     details_line = format_generation_summary(gen_args, MODEL_NAME)
@@ -121,7 +136,7 @@ def format_info(user, gen_args):
 
     formatted_info = f"""
 <@{user}>{img_c}
-prompt: ```{prompt_text}```{neg_prompt}
+```{prompt_text}```{neg_prompt}
 {details_line}
 """
     return formatted_info
@@ -136,12 +151,13 @@ def parse_dimensions(dimension_str):
     return width, height
 
 def extract_generation_details(content):
-    prompt_match = re.search(r"prompt:\s*```(.*?)```", content, re.DOTALL)
+    # Match first ``` block (the prompt)
+    prompt_match = re.search(r"Generated (?:image|\d+ images)\s*```(.*?)```", content, re.DOTALL)
     if not prompt_match:
         return None
     prompt = prompt_match.group(1).strip()
 
-    negative_match = re.search(r"negative prompt:\s*```(.*?)```", content, re.DOTALL)
+    negative_match = re.search(r"negative:\s*```(.*?)```", content, re.DOTALL)
     negative_prompt = negative_match.group(1).strip() if negative_match else DEFAULT_NEGATIVE_PROMPT
 
     params_match = re.search(r"^>\s*(.*)$", content, re.MULTILINE)
@@ -234,17 +250,69 @@ async def process_job(job: ImageJob):
         if not job.deferred and not job.source.response.is_done():
             await job.source.response.defer(thinking=True)
         send_callable = job.source.followup.send
+        edit_callable = None
     else:
         send_callable = job.source.channel.send
+        edit_callable = None
+
+    # Send initial progress message
+    total_steps = job.gen_args.get('steps', 20)
+    progress_msg = await send_callable(content="Starting.")
+    
+    progress_state = {"current": 0, "total": total_steps, "last_update": time.time(), "started": False, "dots": 1}
+    update_queue = asyncio.Queue()
+
+    def progress_hook(current, total, preview, node_id=None):
+        progress_state["current"] = current
+        progress_state["total"] = total
+        progress_state["started"] = True
+        now = time.time()
+        # Only queue update if enough time has passed (rate limit friendly)
+        if now - progress_state["last_update"] >= 1.0:
+            progress_state["last_update"] = now
+            try:
+                update_queue.put_nowait((current, total))
+            except asyncio.QueueFull:
+                pass
+
+    async def update_progress():
+        while True:
+            try:
+                current, total = await asyncio.wait_for(update_queue.get(), timeout=0.5)
+                await progress_msg.edit(content=f"Generating... {build_progress_bar(current, total)}")
+            except asyncio.TimeoutError:
+                # Animate dots while waiting to start
+                if not progress_state["started"]:
+                    progress_state["dots"] = (progress_state["dots"] % 3) + 1
+                    dots = "." * progress_state["dots"]
+                    await progress_msg.edit(content=f"Starting{dots}")
+                continue
+            except asyncio.CancelledError:
+                break
+
+    # Start progress updater task
+    progress_task = asyncio.create_task(update_progress())
 
     loop = asyncio.get_running_loop()
-    if job.job_type == "upscale":
-        def run_upscale():
-            return [upscale_image(job.base_image, job.gen_args)]
+    set_progress_bar_global_hook(progress_hook)
+    
+    try:
+        if job.job_type == "upscale":
+            def run_upscale():
+                return [upscale_image(job.base_image, job.gen_args)]
 
-        images = await loop.run_in_executor(None, run_upscale)
-    else:
-        images = await loop.run_in_executor(None, lambda: generate_images(job.gen_args))
+            images = await loop.run_in_executor(None, run_upscale)
+        else:
+            images = await loop.run_in_executor(None, lambda: generate_images(job.gen_args))
+    finally:
+        set_progress_bar_global_hook(None)
+        progress_task.cancel()
+        try:
+            await progress_task
+        except asyncio.CancelledError:
+            pass
+        # Delete progress message
+        await progress_msg.delete()
 
     files = []
     for idx, image in enumerate(images, start=1):
@@ -422,9 +490,11 @@ if MODEL_NAME == "z_image":
         seed="Random seed (leave blank for random)",
         enhance_prompt="Enhance prompt using LLM",
         noise="Add conditioning timestep range (0.1-1.0)",
+        lora=f"Optional LoRA preset name(s) (comma separated). Available: {', '.join(sorted(LORA_CONFIG.keys())) or 'none'}",
     )
     @app_commands.choices(
         dimensions=[app_commands.Choice(name=d, value=d) for d in DIMENSION_PRESETS.keys()],
+        lora=[app_commands.Choice(name=l, value=l) for l in LORA_CONFIG.keys()],
     )
     async def imagine(
         interaction: discord.Interaction,
@@ -434,78 +504,6 @@ if MODEL_NAME == "z_image":
         seed: Optional[int] = None,
         enhance_prompt: bool = False,
         noise: bool = False,
-    ):
-        if CHANNEL_IDS and interaction.channel_id not in CHANNEL_IDS:
-            await interaction.response.send_message(
-                "This command is not available in this channel.",
-                ephemeral=True,
-            )
-            return
-
-        await interaction.response.defer(thinking=True)
-
-        # Apply keywords/wildcards first
-        processed_gen_args = preprocess_prompt(prompt, None, None)
-        final_prompt = processed_gen_args.get("display_prompt", prompt)
-
-        if enhance_prompt:
-            final_prompt = await enhance_prompt_with_llm(final_prompt)
-            processed_gen_args["prompt"] = final_prompt
-            processed_gen_args["display_prompt"] = final_prompt
-
-        width, height = parse_dimensions(dimensions)
-
-        base_args = {
-            "prompt": processed_gen_args["prompt"],
-            "neg_prompt": processed_gen_args["neg_prompt"],
-            "width": width,
-            "height": height,
-            "batch_size": batch_size,
-            "noise": noise,
-        }
-
-        if enhance_prompt:
-            base_args["display_prompt"] = final_prompt
-        elif "display_prompt" in processed_gen_args:
-            base_args["display_prompt"] = processed_gen_args["display_prompt"]
-
-        if seed is not None:
-            base_args["seed"] = int(seed)
-
-        gen_args = preprocess_gen_args(dict(base_args), txt2img_args)
-
-        await job_queue.put(ImageJob(interaction, gen_args, interaction.user.id, deferred=True))
-
-else:
-    @tree.command(name="imagine", description="Generate an image")
-    @app_commands.describe(
-        prompt="Prompt for the image",
-        negative_prompt="Negative prompt",
-        dimensions=f"Image dimensions (preset or WIDTHxHEIGHT). Default: {txt2img_args['width']}x{txt2img_args['height']}",
-        steps="Number of sampling steps",
-        cfg="Classifier free guidance scale",
-        batch_size="Number of images to generate",
-        seed="Random seed (leave blank for random)",
-        sampler="Sampling method",
-        scheduler="Scheduler type",
-        lora=f"Optional LoRA preset name(s) (comma separated). Available: {', '.join(sorted(LORA_CONFIG.keys())) or 'none'}",
-    )
-    @app_commands.choices(
-        dimensions=[app_commands.Choice(name=d, value=d) for d in DIMENSION_PRESETS.keys()],
-        sampler=[app_commands.Choice(name=s, value=s) for s in SAMPLERS],
-        scheduler=[app_commands.Choice(name=s, value=s) for s in SCHEDULERS],
-    )
-    async def imagine(
-        interaction: discord.Interaction,
-        prompt: str,
-        negative_prompt: Optional[str] = None,
-        dimensions: str = f"{txt2img_args['width']}x{txt2img_args['height']}",
-        steps: app_commands.Range[int, 1, 50] = txt2img_args["steps"],
-        cfg: app_commands.Range[float, 1.0, 15.0] = float(txt2img_args["cfg"]),
-        batch_size: app_commands.Range[int, 1, 4] = txt2img_args["batch_size"],
-        seed: Optional[int] = None,
-        sampler: Optional[str] = None,
-        scheduler: Optional[str] = None,
         lora: Optional[str] = None,
     ):
         if CHANNEL_IDS and interaction.channel_id not in CHANNEL_IDS:
@@ -533,12 +531,90 @@ else:
                     ephemeral=True,
                 )
                 return
-            # Preserve input order while removing duplicates
             seen = set()
             for name in resolved:
                 if name not in seen:
                     seen.add(name)
                     lora_names.append(name)
+
+        await interaction.response.defer(thinking=True)
+
+        # Apply keywords/wildcards first
+        processed_gen_args = preprocess_prompt(prompt, None, lora_names)
+        final_prompt = processed_gen_args.get("display_prompt", prompt)
+
+        if enhance_prompt:
+            final_prompt = await enhance_prompt_with_llm(final_prompt)
+            processed_gen_args["prompt"] = final_prompt
+            processed_gen_args["display_prompt"] = final_prompt
+
+        width, height = parse_dimensions(dimensions)
+
+        base_args = {
+            "prompt": processed_gen_args["prompt"],
+            "neg_prompt": processed_gen_args["neg_prompt"],
+            "width": width,
+            "height": height,
+            "batch_size": batch_size,
+            "noise": noise,
+        }
+
+        if enhance_prompt:
+            base_args["display_prompt"] = final_prompt
+        elif "display_prompt" in processed_gen_args:
+            base_args["display_prompt"] = processed_gen_args["display_prompt"]
+
+        if seed is not None:
+            base_args["seed"] = int(seed)
+
+        if lora_names:
+            base_args["lora"] = lora_names
+
+        gen_args = preprocess_gen_args(dict(base_args), txt2img_args)
+
+        await job_queue.put(ImageJob(interaction, gen_args, interaction.user.id, deferred=True))
+
+else:
+    @tree.command(name="imagine", description="Generate an image")
+    @app_commands.describe(
+        prompt="Prompt for the image",
+        negative_prompt="Negative prompt",
+        dimensions=f"Image dimensions (preset or WIDTHxHEIGHT). Default: {txt2img_args['width']}x{txt2img_args['height']}",
+        steps="Number of sampling steps",
+        cfg="Classifier free guidance scale",
+        batch_size="Number of images to generate",
+        seed="Random seed (leave blank for random)",
+        sampler="Sampling method",
+        scheduler="Scheduler type",
+        lora=f"Optional LoRA preset name(s) (comma separated). Available: {', '.join(sorted(LORA_CONFIG.keys())) or 'none'}",
+    )
+    @app_commands.choices(
+        dimensions=[app_commands.Choice(name=d, value=d) for d in DIMENSION_PRESETS.keys()],
+        sampler=[app_commands.Choice(name=s, value=s) for s in SAMPLERS],
+        scheduler=[app_commands.Choice(name=s, value=s) for s in SCHEDULERS],
+        lora=[app_commands.Choice(name=l, value=l) for l in LORA_CONFIG.keys()],
+    )
+    async def imagine(
+        interaction: discord.Interaction,
+        prompt: str,
+        negative_prompt: Optional[str] = None,
+        dimensions: str = f"{txt2img_args['width']}x{txt2img_args['height']}",
+        steps: app_commands.Range[int, 1, 50] = txt2img_args["steps"],
+        cfg: app_commands.Range[float, 1.0, 15.0] = float(txt2img_args["cfg"]),
+        batch_size: app_commands.Range[int, 1, 4] = txt2img_args["batch_size"],
+        seed: Optional[int] = None,
+        sampler: Optional[str] = None,
+        scheduler: Optional[str] = None,
+        lora: Optional[str] = None,
+    ):
+        if CHANNEL_IDS and interaction.channel_id not in CHANNEL_IDS:
+            await interaction.response.send_message(
+                "This command is not available in this channel.",
+                ephemeral=True,
+            )
+            return
+
+        lora_names: List[str] = [lora] if lora else []
 
         width, height = parse_dimensions(dimensions)
         processed_gen_args = preprocess_prompt(prompt, negative_prompt, lora_names)
@@ -571,45 +647,6 @@ else:
 
         await interaction.response.defer(thinking=True)
         await job_queue.put(ImageJob(interaction, gen_args, interaction.user.id, deferred=True))
-
-    @imagine.autocomplete("lora")
-    async def imagine_lora_autocomplete(
-        interaction: discord.Interaction,
-        current: str,
-    ) -> List[app_commands.Choice[str]]:
-        del interaction  # Unused but required by callback signature
-        all_loras = list(LORA_CONFIG.keys())
-        if not all_loras:
-            return []
-
-        parts = [segment.strip() for segment in current.split(",")] if current else []
-        prefix = parts[-1] if parts else ""
-        used = {segment.lower() for segment in parts[:-1] if segment}
-
-        suggestions: List[app_commands.Choice[str]] = []
-
-        def build_value(selection: str) -> str:
-            base = [segment for segment in parts[:-1] if segment]
-            base.append(selection)
-            return ", ".join(base)
-
-        for name in all_loras:
-            if name.lower() in used:
-                continue
-            if not prefix or name.lower().startswith(prefix.lower()):
-                suggestions.append(app_commands.Choice(name=name, value=build_value(name)))
-            if len(suggestions) >= 25:
-                break
-
-        if not suggestions:
-            for name in all_loras:
-                if name.lower() in used:
-                    continue
-                suggestions.append(app_commands.Choice(name=name, value=build_value(name)))
-                if len(suggestions) >= 25:
-                    break
-
-        return suggestions
 
 
 @tree.command(name="upscale", description="Upscale an image")

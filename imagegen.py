@@ -20,6 +20,7 @@ if COMFY_PATH not in sys.path:
 import folder_paths  # type: ignore
 from nodes import NODE_CLASS_MAPPINGS  # type: ignore
 from comfy_extras.nodes_sd3 import EmptySD3LatentImage as EmptySD3LatentImageClass
+from comfy.utils import set_progress_bar_global_hook
 
 CheckpointLoaderSimple = NODE_CLASS_MAPPINGS["CheckpointLoaderSimple"]()
 CLIPTextEncode = NODE_CLASS_MAPPINGS["CLIPTextEncode"]()
@@ -92,7 +93,8 @@ def preprocess_gen_args(gen_args, default_args):
 def _prepare_model(lora_keys: Optional[List[str]]):
     if MODEL_NAME == "z_image":
         model = UNETLoader.load_unet("z_image_turbo_bf16.safetensors", "default")[0]
-        clip = CLIPLoader.load_clip("qwen_3_4b.safetensors", "stable_diffusion", "default")[0]
+        #clip = CLIPLoader.load_clip("qwen_3_4b.safetensors", "stable_diffusion", "default")[0]
+        clip = CLIPLoader.load_clip("qwen3_4b_fp8_scaled.safetensors", "stable_diffusion", "default")[0]
         vae = VAELoader.load_vae("ae.safetensors")[0]
     else:
         model, clip, vae = CheckpointLoaderSimple.load_checkpoint(_resolve_checkpoint())[:3]
