@@ -250,14 +250,18 @@ async def process_job(job: ImageJob):
         if not job.deferred and not job.source.response.is_done():
             await job.source.response.defer(thinking=True)
         send_callable = job.source.followup.send
-        edit_callable = None
+        channel = job.source.channel
     else:
         send_callable = job.source.channel.send
-        edit_callable = None
+        channel = job.source.channel
 
-    # Send initial progress message
+    # For interactions, send progress as followup (attached to "used /imagine")
+    # For reactions, send progress as separate message
     total_steps = job.gen_args.get('steps', 20)
-    progress_msg = await send_callable(content="Starting.")
+    if isinstance(job.source, discord.Interaction):
+        progress_msg = await send_callable(content="Starting.")
+    else:
+        progress_msg = await channel.send(content="Starting.")
     
     progress_state = {"current": 0, "total": total_steps, "last_update": time.time(), "started": False, "dots": 1}
     update_queue = asyncio.Queue()
@@ -311,8 +315,6 @@ async def process_job(job: ImageJob):
             await progress_task
         except asyncio.CancelledError:
             pass
-        # Delete progress message
-        await progress_msg.delete()
 
     files = []
     for idx, image in enumerate(images, start=1):
@@ -323,7 +325,9 @@ async def process_job(job: ImageJob):
 
     content = format_info(job.user_id, job.gen_args)
 
-    message = await send_callable(content=content, files=files)
+    # Edit the progress message with final content and files (avoids interaction token expiry issues)
+    await progress_msg.edit(content=content, attachments=files)
+    message = progress_msg
 
     if job.job_type == "generate":
         await message.add_reaction(REROLL_EMOJI)
