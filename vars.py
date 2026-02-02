@@ -1,10 +1,16 @@
 
-MODEL_NAME = "z_image"
+MODEL_NAME = "anima"#"i32_x2_mk2_aaa"#"z_image"
 # "ntrMIXIllustriousXL_xiii"
 # "i32_x2_mk2_aaa"
 # "dreambox_v40"
 # "oneObsession_v18"
 MODEL_PATH = f"/home/xr/code/ComfyUI/models/checkpoints/{MODEL_NAME}.safetensors"
+
+ANIMA_UNET = "anima-preview.safetensors"
+ANIMA_CLIP = "qwen_3_06b_base.safetensors"
+ANIMA_VAE = "qwen_image_vae.safetensors"
+ANIMA_DEFAULT_POSITIVE_PROMPT = "year 2025, newest, best quality, masterpiece, score_9, highres, absurdres, safe"
+ANIMA_DEFAULT_NEGATIVE_PROMPT = "worst quality, low quality, score_1, score_2, score_3, blurry, jpeg artifacts, sepia, lowres, bad anatomy, deformed, distorted, extra limbs, cloned face, disfigured, gross proportions, malformed limbs, missing arms, missing legs, fused fingers, too many fingers, long neck"
 
 import yaml
 with open('api_keys.yaml', 'r') as file:
@@ -19,7 +25,7 @@ UPSCALE_WEAK_EMOJI = "🔎"
 UPSCALE_HARD_EMOJI = "🎨"
 NUMBER_EMOJIS = ["1️⃣", "2️⃣", "3️⃣", "4️⃣"]
 
-SAMPLERS = ["euler", "euler_ancestral", "dpmpp_2m", "dpmpp_sde"]
+SAMPLERS = ["euler", "euler_ancestral", "dpmpp_2m", "dpmpp_sde", "er_sde"]
 SCHEDULERS = ["normal", "simple", "beta", "sgm_uniform"]
 
 DEFAULT_POSITIVE_PROMPT = "masterpiece, best quality, absurdres, very awa"
@@ -198,18 +204,40 @@ LORA_CONFIG = {
 }
 
 LORA_CONFIG_Z_IMAGE = {
-    "Movie": [
-        {
-            "lora": "z_image/movie_zimage_lora.safetensors",
-            "strength": 1,
-        },
-    ],
     "grainscape": [
         {
             "lora": "z_image/grainscape_zimage.safetensors",
             "strength": 1,
         },
-    ]
+    ],
+    "lineart": [
+        {
+            "lora": "z_image/line_dive_zimage_turbo_512.safetensors",
+            "strength": 0.75,
+            "keywords": "line_dive, Fine-Line Ink Illustration"
+        },
+    ],
+    "Sh1nStl": [
+        {
+            "lora": "z_image/Sh1nStl_V3.safetensors",
+            "strength": 1,
+            "keywords": "Sh1nStl style"
+        },
+    ],
+    "LineMelts": [
+        {
+            "lora": "z_image/LineMelts_SoloLoRA_Zv2.safetensors",
+            "strength": 1,
+            "keywords": "LineMelts"
+        },
+    ],
+    "LightPoem": [
+        {
+            "lora": "z_image/LightPoem_SoloLoRA_Zv1.safetensors",
+            "strength": 1,
+            "keywords": "LightPoem"
+        },
+    ],
 }
 
 DIMENSION_PRESETS = {
@@ -252,3 +280,15 @@ if MODEL_NAME == "z_image":
 
     LORA_CONFIG = LORA_CONFIG_Z_IMAGE
     DEFAULT_POSITIVE_PROMPT = DEFAULT_NEGATIVE_PROMPT = ""
+elif MODEL_NAME == "anima":
+    txt2img_args = {
+        'width': 896,
+        'height': 1152,
+        'steps': 30,
+        'cfg': 4,
+        'batch_size': 1,
+        'sampler_name': "er_sde",
+        'scheduler': "simple",
+    }
+    DEFAULT_POSITIVE_PROMPT = ANIMA_DEFAULT_POSITIVE_PROMPT
+    DEFAULT_NEGATIVE_PROMPT = ANIMA_DEFAULT_NEGATIVE_PROMPT

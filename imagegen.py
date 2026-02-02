@@ -8,6 +8,9 @@ import torch
 from PIL import Image
 
 from vars import (
+    ANIMA_CLIP,
+    ANIMA_UNET,
+    ANIMA_VAE,
     LORA_CONFIG,
     MODEL_NAME,
     MODEL_PATH,
@@ -94,8 +97,12 @@ def _prepare_model(lora_keys: Optional[List[str]]):
     if MODEL_NAME == "z_image":
         model = UNETLoader.load_unet("z_image_turbo_bf16.safetensors", "default")[0]
         #clip = CLIPLoader.load_clip("qwen_3_4b.safetensors", "stable_diffusion", "default")[0]
-        clip = CLIPLoader.load_clip("qwen3_4b_fp8_scaled.safetensors", "stable_diffusion", "default")[0]
+        clip = CLIPLoader.load_clip("qwen_3_4b.safetensors", "stable_diffusion", "default")[0]
         vae = VAELoader.load_vae("ae.safetensors")[0]
+    elif MODEL_NAME == "anima":
+        model = UNETLoader.load_unet(ANIMA_UNET, "default")[0]
+        clip = CLIPLoader.load_clip(ANIMA_CLIP, "stable_diffusion", "default")[0]
+        vae = VAELoader.load_vae(ANIMA_VAE)[0]
     else:
         model, clip, vae = CheckpointLoaderSimple.load_checkpoint(_resolve_checkpoint())[:3]
     if lora_keys:

@@ -132,7 +132,7 @@ def format_info(user, gen_args):
         neg_prompt = ''
     details_line = format_generation_summary(gen_args, MODEL_NAME)
 
-    prompt_text = gen_args.get('display_prompt', gen_args['prompt']) or ''
+    prompt_text = gen_args.get('display_prompt', gen_args['prompt'])[:1500] or ''
 
     formatted_info = f"""
 <@{user}>{img_c}
