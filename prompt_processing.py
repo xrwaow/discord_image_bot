@@ -3,17 +3,16 @@ import re
 from typing import Dict, Iterable, List, Sequence, Tuple
 
 from vars import (
-    DEFAULT_POSITIVE_PROMPT,
-    DEFAULT_NEGATIVE_PROMPT,
+    ACTIVE_LORAS,
+    ACTIVE_MODEL,
     KEYWORDS,
-    LORA_CONFIG,
     WILDCARDS,
-    txt2img_args,
+    active_txt2img_args,
 )
 
 KEY_TOKEN = re.compile(r"\{([^{}]+)\}")
 NUMBER_TOKEN = re.compile(r"-?\d+(?:\.\d+)?")
-SUMMARY_SKIP = {"prompt", "neg_prompt", "display_prompt", "display_neg_prompt"}
+SUMMARY_SKIP = {"prompt", "neg_prompt", "display_prompt", "display_neg_prompt", "noise"}
 
 SAMPLING_FIELDS: Sequence[Tuple[Sequence[str], str, callable | None]] = (
     (("cfg",), "cfg", None),
@@ -41,7 +40,6 @@ def _clean(text: str) -> str:
 def _replace_keywords(text: str, cache: Dict[str, str] | None = None) -> str:
     if not text:
         return ""
-
     cache = {} if cache is None else cache
 
     def substitute(match) -> str:
@@ -55,14 +53,14 @@ def _replace_keywords(text: str, cache: Dict[str, str] | None = None) -> str:
             cache[key] = _replace_keywords(KEYWORDS[key], cache)
         elif key in WILDCARDS:
             options = [option for option in WILDCARDS[key] if _clean(option)]
-            selection = random.choice(options) if options else ""
-            cache[key] = _replace_keywords(selection, cache)
+            cache[key] = _replace_keywords(
+                random.choice(options) if options else "", cache
+            )
         else:
             cache[key] = match.group(0)
         return cache[key]
 
-    previous = None
-    current = text
+    previous, current = None, text
     while current != previous:
         previous = current
         current = KEY_TOKEN.sub(substitute, current)
@@ -81,8 +79,9 @@ def _collect_lora_keywords(lora_names: Iterable[str] | None) -> List[str]:
     seen: set[str] = set()
     keywords: List[str] = []
     for name in lora_names or []:
-        for entry in LORA_CONFIG.get(name, []):
-            for word in _normalize_list(entry.get("keywords")):
+        lora_cfg = ACTIVE_LORAS.get(name)
+        if lora_cfg and lora_cfg.keywords:
+            for word in _normalize_list(lora_cfg.keywords):
                 if word not in seen:
                     seen.add(word)
                     keywords.append(word)
@@ -100,28 +99,45 @@ def _ensure_prefix(prompt: str, addition: str, *, prepend: bool) -> str:
     return f"{addition}, {prompt}" if prepend else f"{prompt}, {addition}"
 
 
-def preprocess_prompt(prompt: str, neg_prompt: str | None, lora_names: Iterable[str] | None = None) -> Dict[str, str]:
+def preprocess_prompt(
+    prompt: str, neg_prompt: str | None, lora_names: Iterable[str] | None = None
+) -> Dict[str, str]:
     token_cache: Dict[str, str] = {}
-
     base_prompt = _clean(prompt or "")
     display_prompt = _clean(_replace_keywords(base_prompt, token_cache))
-
     keywords = _collect_lora_keywords(lora_names)
-    prompt_with_keywords = _ensure_prefix(base_prompt, ", ".join(keywords), prepend=True) if keywords else base_prompt
-    prompt_with_defaults = _ensure_prefix(prompt_with_keywords, DEFAULT_POSITIVE_PROMPT, prepend=False)
+
+    prompt_with_keywords = (
+        _ensure_prefix(base_prompt, ", ".join(keywords), prepend=True)
+        if keywords
+        else base_prompt
+    )
+    prompt_with_defaults = _ensure_prefix(
+        prompt_with_keywords, ACTIVE_MODEL.default_positive, prepend=False
+    )
     positive = _clean(_replace_keywords(prompt_with_defaults, token_cache))
 
-    user_negative_raw = _clean(neg_prompt or "")
-    user_negative = _clean(_replace_keywords(user_negative_raw, token_cache))
-    default_negative = _clean(_replace_keywords(DEFAULT_NEGATIVE_PROMPT, token_cache)) if DEFAULT_NEGATIVE_PROMPT else ""
+    user_negative = _clean(_replace_keywords(_clean(neg_prompt or ""), token_cache))
+    default_negative = (
+        _clean(_replace_keywords(ACTIVE_MODEL.default_negative, token_cache))
+        if ACTIVE_MODEL.default_negative
+        else ""
+    )
 
     if user_negative and user_negative != default_negative:
-        negative = f"{user_negative}, {default_negative}" if default_negative else user_negative
+        negative = (
+            f"{user_negative}, {default_negative}"
+            if default_negative
+            else user_negative
+        )
     else:
         negative = default_negative
-    negative = _clean(negative)
 
-    result: Dict[str, str] = {"prompt": positive, "neg_prompt": negative, "display_prompt": display_prompt}
+    result: Dict[str, str] = {
+        "prompt": positive,
+        "neg_prompt": _clean(negative),
+        "display_prompt": display_prompt,
+    }
     if user_negative and user_negative != default_negative:
         result["display_neg_prompt"] = user_negative
 
@@ -140,10 +156,10 @@ def _normalize_scalar(value) -> str:
     if isinstance(value, (int, float)):
         return _format_number(value)
     if isinstance(value, (list, tuple, set)):
-        return ", ".join(part for part in (_normalize_scalar(item) for item in value) if part)
+        return ", ".join(
+            part for part in (_normalize_scalar(item) for item in value) if part
+        )
     text = _clean(str(value))
-    if not text:
-        return ""
     if NUMBER_TOKEN.fullmatch(text):
         try:
             return _format_number(float(text))
@@ -166,19 +182,19 @@ def _format_field(label: str, value: str) -> str:
 
 
 def _coerce_int(value) -> int | None:
-    if value is None:
-        return None
     try:
         num = int(value)
+        return num if num >= 0 else None
     except (TypeError, ValueError):
         return None
-    return num if num >= 0 else None
 
 
 def _dimension_segment(args: Dict) -> Tuple[str, set[str]]:
-    width = _coerce_int(args.get("width"))
-    height = _coerce_int(args.get("height"))
-    steps = _coerce_int(args.get("steps"))
+    width, height, steps = (
+        _coerce_int(args.get("width")),
+        _coerce_int(args.get("height")),
+        _coerce_int(args.get("steps")),
+    )
     used: set[str] = set()
 
     if width is None and height is None:
@@ -188,11 +204,11 @@ def _dimension_segment(args: Dict) -> Tuple[str, set[str]]:
     if height is not None:
         used.add("height")
 
-    if width is not None and height is not None:
-        segment = f"**{width}x{height}**"
-    else:
-        segment = f"**{width if width is not None else height}**"
-
+    segment = (
+        f"**{width}x{height}**"
+        if width is not None and height is not None
+        else f"**{width if width is not None else height}**"
+    )
     if steps is not None:
         used.add("steps")
         segment = f"{segment}@**{steps}**"
@@ -200,12 +216,21 @@ def _dimension_segment(args: Dict) -> Tuple[str, set[str]]:
     return segment, used
 
 
-def _collect_groups(args: Dict, fields: Sequence[Tuple[Sequence[str], str, callable | None]], consumed: set[str], skip_defaults: bool = False) -> List[str]:
+def _collect_groups(
+    args: Dict,
+    fields: Sequence[Tuple[Sequence[str], str, callable | None]],
+    consumed: set[str],
+    skip_defaults: bool = False,
+) -> List[str]:
     items: List[str] = []
     for keys, label, normalizer in fields:
         key, value = _pick_value(args, keys, normalizer)
         if key:
-            if skip_defaults and key in txt2img_args and str(args.get(key)) == str(txt2img_args.get(key)):
+            if (
+                skip_defaults
+                and key in active_txt2img_args
+                and str(args.get(key)) == str(active_txt2img_args.get(key))
+            ):
                 consumed.add(key)
                 continue
             items.append(_format_field(label, value))
@@ -214,7 +239,9 @@ def _collect_groups(args: Dict, fields: Sequence[Tuple[Sequence[str], str, calla
 
 
 def format_generation_summary(gen_args: Dict, default_model: str) -> str:
-    args = {key: value for key, value in gen_args.items() if value not in (None, "", [])}
+    args = {
+        key: value for key, value in gen_args.items() if value not in (None, "", [])
+    }
     segments: List[str] = []
     consumed: set[str] = set()
 
@@ -227,6 +254,11 @@ def format_generation_summary(gen_args: Dict, default_model: str) -> str:
         group = _collect_groups(args, field_group, consumed, skip_defaults=True)
         if group:
             segments.append(" ".join(group))
+
+    # Handle `noise` conditional display
+    if str(args.get("noise")).lower() == "true":
+        segments.append("**noise**: true;")
+        consumed.add("noise")
 
     remaining: List[str] = []
     for key, value in args.items():
@@ -248,5 +280,4 @@ def format_generation_summary(gen_args: Dict, default_model: str) -> str:
 
     if not segments:
         segments.append(_format_field("model", default_model))
-
     return "> " + " | ".join(segments)

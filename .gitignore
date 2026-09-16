@@ -1,7 +1,4 @@
 a/
-__pycache__/
-*_save*
+*__pycache__*
 *.json
 api_keys.yaml
-z_model*
-llm_info.txt
