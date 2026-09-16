@@ -41,7 +41,7 @@ USER_IDS = [
 ENABLE_REIMAGINE = True
 ENABLE_UPSCALE_REACTIONS = True  # TODO: add separate for weak/hard upscale
 ENABLE_STANDALONE_UPSCALE = False
-ENABLE_ENHANCE_PROMPT = False
+DEFAULT_ENHANCE_PROMPT: bool = False  # default for /imagine's enhance option
 
 # --- BOT EMOJIS & SETTINGS ---
 REROLL_EMOJI = "🌺"
