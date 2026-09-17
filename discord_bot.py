@@ -26,6 +26,7 @@ from vars import (
     DELETE_EMOJI,
     DISCORD_TOKEN,
     DEFAULT_ENHANCE_PROMPT,
+    ENABLE_BUTTON_CONTROLS,
     ENABLE_REIMAGINE,
     ENABLE_STANDALONE_UPSCALE,
     ENABLE_UPSCALE_REACTIONS,
@@ -35,13 +36,11 @@ from vars import (
     REROLL_EMOJI,
     SAMPLERS,
     SCHEDULERS,
-    UPSCALE_HARD_EMOJI,
-    UPSCALE_WEAK_EMOJI,
+    UPSCALE_EMOJI,
     USER_IDS,
     WILDCARDS,
     active_txt2img_args,
-    active_upscale_hard_args,
-    active_upscale_weak_args,
+    active_upscale_args,
 )
 
 
@@ -69,8 +68,7 @@ def build_progress_bar(current: int, total: int, bar_length: int = 10) -> str:
 job_queue = asyncio.Queue()
 queue_worker_task = None
 client = discord.Client(
-    intents=discord.Intents.default()
-    | discord.Intents(message_content=True, reactions=True)
+    intents=discord.Intents.default() | discord.Intents(message_content=True)
 )
 tree = app_commands.CommandTree(
     client,
@@ -81,17 +79,128 @@ tree = app_commands.CommandTree(
 )
 
 
+# --- IMAGE CONTROLS (BUTTONS) ---
+# Jobs started from a button are sourced from the Interaction so results post via its
+# followup -- a user-installed app has no permission to use channel.send.
+CONTROL_PREFIX = "imagebot"
+
+
+def _control_specs(batch_size, generate, full=False):
+    """(label, emoji, style, action, index) buttons; `full` yields every possible one."""
+    specs = []
+    if full or (generate and ENABLE_REIMAGINE):
+        specs.append((None, REROLL_EMOJI, discord.ButtonStyle.secondary, "reimagine", 0))
+    if full or (generate and ENABLE_UPSCALE_REACTIONS):
+        count = len(NUMBER_EMOJIS) if full else min(batch_size, len(NUMBER_EMOJIS))
+        for i in range(count):
+            emoji = UPSCALE_EMOJI if count == 1 else NUMBER_EMOJIS[i]
+            specs.append((None, emoji, discord.ButtonStyle.secondary, "upscale", i))
+    specs.append((None, DELETE_EMOJI, discord.ButtonStyle.secondary, "delete", 0))
+    return specs
+
+
+class _ControlButton(discord.ui.Button):
+    def __init__(self, label, emoji, style, action, index):
+        super().__init__(
+            label=label,
+            emoji=emoji,
+            style=style,
+            custom_id=f"{CONTROL_PREFIX}:{action}:{index}",
+        )
+        self.action, self.index = action, index
+
+    async def callback(self, interaction: discord.Interaction):
+        message = interaction.message
+        if message is None or message.author.id != client.user.id:
+            return await interaction.response.send_message(
+                "This control is no longer available.", ephemeral=True
+            )
+        await interaction.response.defer()
+        error = await handle_image_action(interaction, self.action, self.index)
+        if error:
+            await interaction.followup.send(error, ephemeral=True)
+
+
+def build_control_view(job_type, batch_size, full=False) -> discord.ui.View:
+    view = discord.ui.View(timeout=None)
+    for item in _control_specs(batch_size, job_type == "generate", full):
+        view.add_item(_ControlButton(*item))
+    return view
+
+
+async def handle_image_action(interaction: discord.Interaction, action, index=0):
+    """Run a control action from a button. Returns an error string, or None."""
+    message = interaction.message
+    if action == "delete":
+        try:
+            await interaction.delete_original_response()
+        except discord.HTTPException:
+            return "Could not delete this message."
+        return None
+
+    details = extract_generation_details(message.content)
+    if details is None:
+        return "Could not read generation details from this message."
+    prompt, negative_prompt, parsed_params = details
+    processed = preprocess_prompt(prompt, negative_prompt, parsed_params.get("lora"))
+
+    if action == "reimagine":
+        if not ENABLE_REIMAGINE:
+            return "Reimagining is disabled."
+        if "width" not in parsed_params or "height" not in parsed_params:
+            return "Missing size details."
+        gen_args = dict(processed, **parsed_params)
+        gen_args.pop("seed", None)
+        await job_queue.put(
+            ImageJob(
+                interaction,
+                preprocess_gen_args(gen_args, active_txt2img_args),
+                interaction.user.id,
+                deferred=True,
+            )
+        )
+        return None
+
+    if action == "upscale":
+        if not ENABLE_UPSCALE_REACTIONS:
+            return "Upscaling is disabled."
+        if not message.attachments or index >= len(message.attachments):
+            return "No image available for this control."
+        with Image.open(BytesIO(await message.attachments[index].read())) as img:
+            base_image = img.convert("RGB").copy()
+        args: dict = dict(processed)
+        if "lora" in parsed_params:
+            args["lora"] = (
+                [parsed_params["lora"]]
+                if isinstance(parsed_params["lora"], str)
+                else parsed_params["lora"]
+            )
+        await job_queue.put(
+            ImageJob(
+                interaction,
+                preprocess_gen_args(args, active_upscale_args),
+                interaction.user.id,
+                deferred=True,
+                job_type="upscale",
+                base_image=base_image,
+            )
+        )
+        return None
+
+    return "Unknown action."
+
+
 def reload_vars():
     import importlib
 
     importlib.reload(vars)
     global \
         active_txt2img_args, \
-        active_upscale_weak_args, \
-        active_upscale_hard_args, \
+        active_upscale_args, \
         ACTIVE_LORAS, \
         ACTIVE_MODEL
     global \
+        ENABLE_BUTTON_CONTROLS, \
         ENABLE_REIMAGINE, \
         ENABLE_UPSCALE_REACTIONS, \
         ENABLE_STANDALONE_UPSCALE, \
@@ -100,13 +209,13 @@ def reload_vars():
         ACTIVE_LORAS,
         ACTIVE_MODEL,
         DEFAULT_ENHANCE_PROMPT,
+        ENABLE_BUTTON_CONTROLS,
         ENABLE_REIMAGINE,
         ENABLE_REIMAGINE,
         ENABLE_STANDALONE_UPSCALE,
         ENABLE_UPSCALE_REACTIONS,
         active_txt2img_args,
-        active_upscale_hard_args,
-        active_upscale_weak_args,
+        active_upscale_args,
     )
 
 
@@ -367,24 +476,14 @@ async def process_job(job: ImageJob):
         buffer.seek(0)
         files.append(discord.File(buffer, filename=f"generated_{idx}.png"))
 
-    await progress_msg.edit(
-        content=format_info(job.user_id, job.gen_args), attachments=files
-    )
-
-    if job.job_type == "generate":
-        if ENABLE_REIMAGINE:
-            await progress_msg.add_reaction(REROLL_EMOJI)
-
-        if ENABLE_UPSCALE_REACTIONS:
-            batch_size = job.gen_args.get("batch_size", len(images))
-            if batch_size == 1:
-                await progress_msg.add_reaction(UPSCALE_WEAK_EMOJI)
-                await progress_msg.add_reaction(UPSCALE_HARD_EMOJI)
-            else:
-                for idx in range(min(batch_size, len(NUMBER_EMOJIS))):
-                    await progress_msg.add_reaction(NUMBER_EMOJIS[idx])
-
-    await progress_msg.add_reaction(DELETE_EMOJI)
+    batch_size = job.gen_args.get("batch_size", len(images))
+    edit_kwargs = {
+        "content": format_info(job.user_id, job.gen_args),
+        "attachments": files,
+    }
+    if ENABLE_BUTTON_CONTROLS:
+        edit_kwargs["view"] = build_control_view(job.job_type, batch_size)
+    await progress_msg.edit(**edit_kwargs)
 
 
 @client.event
@@ -393,86 +492,9 @@ async def on_ready():
     print(f"Logged in as {client.user}")
     if queue_worker_task is None:
         queue_worker_task = client.loop.create_task(queue_worker())
+    if ENABLE_BUTTON_CONTROLS:
+        client.add_view(build_control_view("generate", len(NUMBER_EMOJIS), full=True))
     await tree.sync()
-
-
-@client.event
-async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
-    if payload.user_id == client.user.id:
-        return
-    channel = client.get_channel(payload.channel_id) or await client.fetch_channel(
-        payload.channel_id
-    )
-    message = await channel.fetch_message(payload.message_id)
-    if message.author.id != client.user.id:
-        return
-
-    emoji = str(payload.emoji)
-    if emoji == DELETE_EMOJI:
-        await message.delete()
-        return
-
-    details = extract_generation_details(message.content)
-    if details is None:
-        return
-    prompt, negative_prompt, parsed_params = details
-
-    processed_gen_args = preprocess_prompt(
-        prompt, negative_prompt, parsed_params.get("lora")
-    )
-
-    if emoji == REROLL_EMOJI and ENABLE_REIMAGINE:
-        if "width" not in parsed_params or "height" not in parsed_params:
-            return
-        gen_args = dict(processed_gen_args, **parsed_params)
-        gen_args.pop("seed", None)
-        await job_queue.put(
-            ImageJob(
-                message,
-                preprocess_gen_args(gen_args, active_txt2img_args),
-                payload.user_id,
-            )
-        )
-        return
-
-    if ENABLE_UPSCALE_REACTIONS and emoji in NUMBER_EMOJIS + [
-        UPSCALE_WEAK_EMOJI,
-        UPSCALE_HARD_EMOJI,
-    ]:
-        if not message.attachments or any(
-            r.emoji == emoji and r.count > 2 for r in message.reactions
-        ):
-            return
-
-        index = NUMBER_EMOJIS.index(emoji) if emoji in NUMBER_EMOJIS else 0
-        if index >= len(message.attachments):
-            return
-
-        with Image.open(BytesIO(await message.attachments[index].read())) as img:
-            base_image = img.convert("RGB").copy()
-
-        upscale_args = dict(processed_gen_args)
-        if "lora" in parsed_params:
-            upscale_args["lora"] = (
-                [parsed_params["lora"]]
-                if isinstance(parsed_params["lora"], str)
-                else parsed_params["lora"]
-            )
-        preset = (
-            active_upscale_hard_args
-            if emoji == UPSCALE_HARD_EMOJI
-            else active_upscale_weak_args
-        )
-
-        await job_queue.put(
-            ImageJob(
-                message,
-                preprocess_gen_args(upscale_args, preset),
-                payload.user_id,
-                job_type="upscale",
-                base_image=base_image,
-            )
-        )
 
 
 @tree.command(name="info", description="Show bot capabilities and presets")
@@ -624,15 +646,7 @@ tree.command(name="imagine", description="Generate an image")(cmd)
 if ENABLE_STANDALONE_UPSCALE:
 
     @tree.command(name="upscale", description="Upscale an image")
-    @app_commands.choices(
-        mode=[
-            app_commands.Choice(name="weak", value="weak"),
-            app_commands.Choice(name="hard", value="hard"),
-        ]
-    )
-    async def upscale(
-        interaction: discord.Interaction, image: discord.Attachment, mode: str = "weak"
-    ):
+    async def upscale(interaction: discord.Interaction, image: discord.Attachment):
         if USER_IDS and interaction.user.id not in USER_IDS:
             return await interaction.response.send_message(
                 "Not available here.", ephemeral=True
@@ -645,8 +659,7 @@ if ENABLE_STANDALONE_UPSCALE:
         with Image.open(BytesIO(await image.read())) as img:
             base_image = img.convert("RGB").copy()
         args = preprocess_gen_args(
-            {"prompt": "high quality, highres", "neg_prompt": ""},
-            active_upscale_weak_args if mode == "weak" else active_upscale_hard_args,
+            {"prompt": "high quality, highres", "neg_prompt": ""}, active_upscale_args
         )
 
         await interaction.response.defer(thinking=True)

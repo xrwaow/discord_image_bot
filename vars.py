@@ -29,25 +29,19 @@ with open("api_keys.yaml", "r") as file:
 
 DISCORD_TOKEN = data["DISCORD_TOKEN"]
 OPENROUTER_API_KEY = data["OPENROUTER_API_KEY"]
-USER_IDS = [
-    data["USER_ID"],  # xr
-    607557680948576287,
-    1233520824913236039,
-    518074129815961620,
-    1318327484223197214,
-]
+USER_IDS = data["USER_IDS"]
 
 # --- GLOBAL TOGGLES ---
 ENABLE_REIMAGINE = True
-ENABLE_UPSCALE_REACTIONS = True  # TODO: add separate for weak/hard upscale
+ENABLE_UPSCALE_REACTIONS = True
 ENABLE_STANDALONE_UPSCALE = False
+ENABLE_BUTTON_CONTROLS = True  # button fallback for channels where reactions fail
 DEFAULT_ENHANCE_PROMPT: bool = False  # default for /imagine's enhance option
 
 # --- BOT EMOJIS & SETTINGS ---
 REROLL_EMOJI = "🌺"
 DELETE_EMOJI = "🗑️"
-UPSCALE_WEAK_EMOJI = "🔎"
-UPSCALE_HARD_EMOJI = "🎨"
+UPSCALE_EMOJI = "🔎"
 NUMBER_EMOJIS = ["1️⃣", "2️⃣", "3️⃣", "4️⃣"]
 
 SAMPLERS = ["euler", "euler_ancestral", "dpmpp_2m", "dpmpp_sde", "er_sde"]
@@ -184,7 +178,7 @@ ARCH_DEFAULTS = {
     },
 }
 
-ARCH_UPSCALE_WEAK = {
+ARCH_UPSCALE = {
     "sdxl": {
         "scale": 1.25,
         "denoising_strength": 0.4,
@@ -203,7 +197,7 @@ ARCH_UPSCALE_WEAK = {
     },
     "anima": {
         "scale": 1.25,
-        "denoising_strength": 0.4,
+        "denoising_strength": 0.3,
         "steps": 12,
         "cfg": 4.0,
         "sampler_name": "er_sde",
@@ -219,48 +213,8 @@ ARCH_UPSCALE_WEAK = {
     },
 }
 
-ARCH_UPSCALE_HARD = {
-    "sdxl": {
-        "scale": 1.25,
-        "denoising_strength": 0.75,
-        "steps": 12,
-        "cfg": 7.0,
-        "sampler_name": "euler",
-        "scheduler": "normal",
-    },
-    "zimg": {
-        "scale": 1.50,
-        "denoising_strength": 0.4,
-        "steps": 6,
-        "cfg": 1.0,
-        "sampler_name": "euler",
-        "scheduler": "simple",
-    },
-    "anima": {
-        "scale": 1.25,
-        "denoising_strength": 0.75,
-        "steps": 20,
-        "cfg": 4.0,
-        "sampler_name": "er_sde",
-        "scheduler": "simple",
-    },
-    "krea2": {
-        "scale": 1.50,
-        "denoising_strength": 0.4,
-        "steps": 6,
-        "cfg": 1.0,
-        "sampler_name": "euler",
-        "scheduler": "simple",
-    },
-}
-
 active_txt2img_args = ARCH_DEFAULTS.get(ACTIVE_MODEL.arch, ARCH_DEFAULTS["sdxl"])
-active_upscale_weak_args = ARCH_UPSCALE_WEAK.get(
-    ACTIVE_MODEL.arch, ARCH_UPSCALE_WEAK["sdxl"]
-)
-active_upscale_hard_args = ARCH_UPSCALE_HARD.get(
-    ACTIVE_MODEL.arch, ARCH_UPSCALE_HARD["sdxl"]
-)
+active_upscale_args = ARCH_UPSCALE.get(ACTIVE_MODEL.arch, ARCH_UPSCALE["sdxl"])
 
 # --- KEYWORDS ---
 KEYWORDS = {

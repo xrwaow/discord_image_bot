@@ -128,8 +128,8 @@ def generate_images(gen_args):
             negative = ConditioningZeroOut.zero_out(negative)[0]
 
         if use_noise:
-            positive = ConditioningSetTimestepRange.set_range(positive, 0.15, 1.0)[0]
-            negative = ConditioningSetTimestepRange.set_range(negative, 0.15, 1.0)[0]
+            positive = ConditioningSetTimestepRange.set_range(positive, 0.1, 1.0)[0]
+            negative = ConditioningSetTimestepRange.set_range(negative, 0.1, 1.0)[0]
 
         if ACTIVE_MODEL.arch == "zimg":
             latent = EmptySD3LatentImage.generate(
